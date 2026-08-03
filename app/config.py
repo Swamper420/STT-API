@@ -17,5 +17,8 @@ class Settings(BaseModel):
     # Server network settings
     host: str = os.getenv("STT_HOST", "0.0.0.0")
     port: int = int(os.getenv("STT_PORT", "8001"))
+    use_ssl: bool = os.getenv("STT_USE_SSL", "false").lower() in ("true", "1", "yes")
+    ssl_certfile: str = os.getenv("STT_SSL_CERT", "cert.pem")
+    ssl_keyfile: str = os.getenv("STT_SSL_KEY", "key.pem")
 
 settings = Settings()
