@@ -4,4 +4,6 @@ uvicorn[standard]
 python-multipart
 ctranslate2
 torch
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
 pydantic

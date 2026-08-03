@@ -1,11 +1,60 @@
+import os
+import sys
+import site
+import ctypes
 import time
 import logging
 import threading
 from typing import Dict, Any, List, Optional
-from faster_whisper import WhisperModel
 from app.config import settings
 
 logger = logging.getLogger("stt_api.model")
+
+def fix_cuda_libraries():
+    """Dynamically preloads libcublas and libcudnn shared libraries from PyTorch / NVIDIA site-packages."""
+    search_dirs = []
+    # Add site packages
+    try:
+        search_dirs.extend(site.getsitepackages())
+    except Exception:
+        pass
+    if hasattr(site, 'USER_SITE') and site.USER_SITE:
+        search_dirs.append(site.USER_SITE)
+    
+    # Add virtual environment site-packages
+    for path in sys.path:
+        if "site-packages" in path and path not in search_dirs:
+            search_dirs.append(path)
+
+    lib_paths = []
+    for sp in search_dirs:
+        nvidia_dir = os.path.join(sp, "nvidia")
+        if os.path.isdir(nvidia_dir):
+            for root, dirs, _ in os.walk(nvidia_dir):
+                if os.path.basename(root) == "lib":
+                    lib_paths.append(root)
+
+    # Preload shared libraries
+    loaded_count = 0
+    for lib_dir in lib_paths:
+        if lib_dir not in os.environ.get("LD_LIBRARY_PATH", ""):
+            os.environ["LD_LIBRARY_PATH"] = lib_dir + ":" + os.environ.get("LD_LIBRARY_PATH", "")
+        
+        for file in os.listdir(lib_dir):
+            if file.startswith("libcublas") or file.startswith("libcudnn") or file.startswith("libcublasLt"):
+                full_path = os.path.join(lib_dir, file)
+                try:
+                    ctypes.CDLL(full_path, mode=ctypes.RTLD_GLOBAL)
+                    loaded_count += 1
+                except Exception:
+                    pass
+    if loaded_count > 0:
+        logger.info(f"Preloaded {loaded_count} CUDA shared libraries (cuBLAS / cuDNN) for CTranslate2.")
+
+# Execute library preloading on module import
+fix_cuda_libraries()
+
+from faster_whisper import WhisperModel
 
 class STTModelWrapper:
     """Wrapper around faster-whisper WhisperModel enforcing Finnish language transcription."""
