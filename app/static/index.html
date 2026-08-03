@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Suomi STT API - Puheentunnistus (Whisper Large v3 Turbo)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="background-glow glow-1"></div>
+    <div class="background-glow glow-2"></div>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo-area">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                        <line x1="12" y1="19" x2="12" y2="22"></line>
+                    </svg>
+                </div>
+                <div>
+                    <h1>Suomi STT API</h1>
+                    <p class="subtitle">Whisper Large v3 Turbo Finnish (CTranslate2 CUDA)</p>
+                </div>
+            </div>
+            <div class="server-badge" id="serverStatusBadge">
+                <span class="status-dot pulsing" id="statusDot"></span>
+                <span id="statusText">Tarkistetaan palvelinta...</span>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <!-- Left Column: Input Section -->
+            <section class="card input-card">
+                <div class="card-header">
+                    <h2>Syötä äänitiedosto tai nauhoita</h2>
+                    <div class="mode-tabs">
+                        <button class="tab-btn active" id="tabUpload">Tiedosto</button>
+                        <button class="tab-btn" id="tabRecord">Mikrofoni</button>
+                    </div>
+                </div>
+
+                <!-- Mode 1: File Upload -->
+                <div class="tab-content active" id="contentUpload">
+                    <div class="drop-zone" id="dropZone">
+                        <div class="drop-zone-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="17 8 12 3 7 8"></polyline>
+                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                            </svg>
+                        </div>
+                        <p class="drop-title">Pudota äänitiedosto tähän</p>
+                        <p class="drop-sub">tai <span class="highlight-link">selaa laitteeltasi</span> (WAV, MP3, M4A, OGG, WEBM, FLAC)</p>
+                        <input type="file" id="audioFileInput" accept="audio/*" class="file-input">
+                    </div>
+                    
+                    <div class="file-preview hidden" id="filePreview">
+                        <div class="file-info">
+                            <svg class="audio-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M9 18V5l12-2v13"></path>
+                                <circle cx="6" cy="18" r="3"></circle>
+                                <circle cx="18" cy="16" r="3"></circle>
+                            </svg>
+                            <div class="file-details">
+                                <span class="file-name" id="fileName">sample.wav</span>
+                                <span class="file-size" id="fileSize">1.2 MB</span>
+                            </div>
+                            <button class="remove-btn" id="removeFileBtn" title="Poista tiedosto">&times;</button>
+                        </div>
+                        <audio id="audioPlayer" controls class="custom-audio-player"></audio>
+                    </div>
+                </div>
+
+                <!-- Mode 2: Microphone Recording -->
+                <div class="tab-content" id="contentRecord">
+                    <div class="recorder-zone">
+                        <div class="mic-visualizer" id="micVisualizer">
+                            <button class="mic-button" id="micRecordBtn" title="Aloita nauhoitus">
+                                <svg viewBox="0 0 24 24" fill="currentColor">
+                                    <circle cx="12" cy="12" r="8"></circle>
+                                </svg>
+                            </button>
+                        </div>
+                        <p class="record-timer" id="recordTimer">00:00</p>
+                        <p class="record-status" id="recordStatus">Napsauta mikrofonia aloittaaksesi puheen nauhoituksen</p>
+                        
+                        <div class="recorded-preview hidden" id="recordedPreview">
+                            <audio id="recordedAudioPlayer" controls class="custom-audio-player"></audio>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Advanced Settings Accordion -->
+                <details class="settings-accordion">
+                    <summary>Asetukset & Parametrit (VAD, Beam Size)</summary>
+                    <div class="settings-grid">
+                        <div class="setting-item">
+                            <label for="beamSizeInput">Beam Size</label>
+                            <input type="number" id="beamSizeInput" min="1" max="10" value="5">
+                            <span class="setting-help">Suurempi arvo tarkentaa haun tulosta.</span>
+                        </div>
+                        <div class="setting-item checkbox-item">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="vadFilterInput" checked>
+                                <span class="slider"></span>
+                            </label>
+                            <div>
+                                <span class="toggle-label">VAD Suodatin (Silence Filter)</span>
+                                <span class="setting-help">Poistaa hiljaisuuden ja taustakohinan.</span>
+                            </div>
+                        </div>
+                        <div class="setting-item checkbox-item">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="wordTimestampsInput">
+                                <span class="slider"></span>
+                            </label>
+                            <div>
+                                <span class="toggle-label">Sana-aikaleimat</span>
+                                <span class="setting-help">Palauttaa kunkin sanan alkamisaajan.</span>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <button class="submit-btn" id="transcribeBtn" disabled>
+                    <span id="btnIcon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                        </svg>
+                    </span>
+                    <span id="btnText">Tunnista puhe (Suomi)</span>
+                </button>
+            </section>
+
+            <!-- Right Column: Results Section -->
+            <section class="card output-card">
+                <div class="card-header">
+                    <h2>Tunnistustulos</h2>
+                    <div class="output-actions" id="outputActions">
+                        <button class="action-btn" id="copyTextBtn" title="Kopioi teksti">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                            Kopioi
+                        </button>
+                        <button class="action-btn" id="downloadTxtBtn" title="Lataa TXT">TXT</button>
+                        <button class="action-btn" id="downloadJsonBtn" title="Lataa JSON">JSON</button>
+                    </div>
+                </div>
+
+                <!-- Empty State -->
+                <div class="empty-state" id="emptyState">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                        <polyline points="10 9 9 9 8 9"></polyline>
+                    </svg>
+                    <p>Ei tunnistettua tekstiä vielä.</p>
+                    <span class="sub-text">Valitse äänitiedosto tai nauhoita puhetta ja napsauta "Tunnista puhe".</span>
+                </div>
+
+                <!-- Loading State -->
+                <div class="loading-state hidden" id="loadingState">
+                    <div class="spinner"></div>
+                    <p class="loading-text">Käsitellään äänitiedostoa GPU:lla...</p>
+                    <span class="elapsed-timer" id="elapsedTimer">0.0 s</span>
+                </div>
+
+                <!-- Output Display State -->
+                <div class="result-container hidden" id="resultContainer">
+                    <div class="stats-bar">
+                        <div class="stat-pill">
+                            <span class="stat-label">Kieli:</span>
+                            <span class="stat-value highlight">Suomi (fi)</span>
+                        </div>
+                        <div class="stat-pill">
+                            <span class="stat-label">Äänen kesto:</span>
+                            <span class="stat-value" id="statDuration">0.0s</span>
+                        </div>
+                        <div class="stat-pill">
+                            <span class="stat-label">Prosessi-aika:</span>
+                            <span class="stat-value" id="statProcTime">0.00s</span>
+                        </div>
+                    </div>
+
+                    <div class="transcript-box">
+                        <h3>Koko teksti:</h3>
+                        <p class="full-transcript-text" id="fullTranscriptText"></p>
+                    </div>
+
+                    <div class="segments-accordion">
+                        <h3>Lause- ja aikaleima-segmentit (<span id="segmentCount">0</span>)</h3>
+                        <div class="segments-list" id="segmentsList">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
