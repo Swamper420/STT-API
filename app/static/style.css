@@ -368,6 +368,7 @@ body {
 .mic-button svg {
     width: 32px;
     height: 32px;
+    pointer-events: none;
 }
 
 .mic-button.recording {

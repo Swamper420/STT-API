@@ -146,8 +146,27 @@ document.addEventListener('DOMContentLoaded', () => {
         updateSubmitButtonState();
     });
 
+    // Helper to get supported audio MIME type for MediaRecorder
+    function getSupportedMimeType() {
+        const candidateTypes = [
+            'audio/webm;codecs=opus',
+            'audio/webm',
+            'audio/ogg;codecs=opus',
+            'audio/mp4',
+            'audio/aac',
+            'audio/wav'
+        ];
+        for (const type of candidateTypes) {
+            if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) {
+                return type;
+            }
+        }
+        return '';
+    }
+
     // Audio Recorder Handlers
-    micRecordBtn.addEventListener('click', async () => {
+    micRecordBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
         if (mediaRecorder && mediaRecorder.state === 'recording') {
             stopRecording();
         } else {
@@ -156,47 +175,100 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     async function startRecording() {
+        // 1. Check browser security context & API availability
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            const isHttps = window.location.protocol === 'https:';
+            const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            let msg = 'Selain estää mikrofonin käytön.';
+            if (!isHttps && !isLocalhost) {
+                msg = 'Mikrofonin käyttö vaatii HTTPS-yhteyden tai localhost-osoitteen (eikä http://' + window.location.host + '). Avaa sivu osoitteessa http://localhost:8001 tai määritä HTTPS.';
+            }
+            alert(msg);
+            recordStatus.textContent = 'Virhe: Mikrofonin käyttö estetty selaimen tietoturvan vuoksi.';
+            return;
+        }
+
         try {
+            recordStatus.textContent = 'Pyydetään mikrofonin käyttöoikeutta...';
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             audioChunks = [];
-            mediaRecorder = new MediaRecorder(stream);
+
+            const mimeType = getSupportedMimeType();
+            const recorderOptions = mimeType ? { mimeType } : {};
+            mediaRecorder = new MediaRecorder(stream, recorderOptions);
 
             mediaRecorder.ondataavailable = (e) => {
-                if (e.data.size > 0) {
+                if (e.data && e.data.size > 0) {
                     audioChunks.push(e.data);
                 }
             };
 
             mediaRecorder.onstop = () => {
-                recordedBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                const finalMime = mediaRecorder.mimeType || mimeType || 'audio/webm';
+                recordedBlob = new Blob(audioChunks, { type: finalMime });
                 const audioUrl = URL.createObjectURL(recordedBlob);
                 recordedAudioPlayer.src = audioUrl;
                 recordedPreview.classList.remove('hidden');
-                recordStatus.textContent = 'Nauhoitus valmis. Voit nyt tunnistaa puheen.';
+                recordStatus.textContent = 'Nauhoitus valmis! Voit nyt tunnistaa puheen.';
                 updateSubmitButtonState();
+                
+                // Reset mic icon
+                setMicIcon(false);
             };
 
-            mediaRecorder.start();
+            mediaRecorder.start(100); // collect 100ms chunks
             micRecordBtn.classList.add('recording');
+            setMicIcon(true);
             recordStatus.textContent = 'Nauhoitetaan puhetta... Napsauta painiketta lopettaaksesi.';
             recordSeconds = 0;
             updateRecordTimer();
+            if (recordInterval) clearInterval(recordInterval);
             recordInterval = setInterval(() => {
                 recordSeconds++;
                 updateRecordTimer();
             }, 1000);
+
         } catch (err) {
-            console.error('Mikrofonin käyttö estetty tai epäonnistui:', err);
-            alert('Mikrofonin käyttö estetty tai ei saatavilla.');
+            console.error('Mikrofonin nauhoitus epäonnistui:', err);
+            let errMsg = 'Mikrofonin käyttö epäonnistui tai se estettiin.';
+            if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                errMsg = 'Mikrofonin käyttöoikeus evätty selaimessa. Salli mikrofoni selaimen osoiteriviltä.';
+            } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+                errMsg = 'Mikrofonia ei löytynyt laitteestasi.';
+            }
+            alert(errMsg);
+            recordStatus.textContent = errMsg;
+            setMicIcon(false);
         }
     }
 
     function stopRecording() {
         if (mediaRecorder && mediaRecorder.state === 'recording') {
             mediaRecorder.stop();
-            mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            if (mediaRecorder.stream) {
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
             micRecordBtn.classList.remove('recording');
             clearInterval(recordInterval);
+            setMicIcon(false);
+        }
+    }
+
+    function setMicIcon(isRecording) {
+        const micIcon = document.getElementById('micIcon');
+        if (!micIcon) return;
+        if (isRecording) {
+            // Stop square icon
+            micIcon.setAttribute('viewBox', '0 0 24 24');
+            micIcon.innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect>';
+        } else {
+            // Mic icon
+            micIcon.setAttribute('viewBox', '0 0 24 24');
+            micIcon.innerHTML = `
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="22"></line>
+            `;
         }
     }
 
