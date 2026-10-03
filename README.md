@@ -1,15 +1,15 @@
-# Finnish STT REST API Server
+# STT REST API Server
 
-A high-performance REST Speech-to-Text (STT) API server serving [RASMUS/whisper-large-v3-turbo-finnish-ct2](https://huggingface.co/RASMUS/whisper-large-v3-turbo-finnish-ct2) via `faster-whisper` (CTranslate2) on CUDA.
+A high-performance REST Speech-to-Text (STT) API server serving Parakeet TDT 0.6B v3 via `onnx-asr` (INT8 quantized ONNX, CUDA by default with CPU fallback).
 
-The server is **locked to Finnish language** (`language="fi"`), eliminating language detection overhead and optimizing Finnish speech recognition accuracy.
+The model auto-detects the spoken language (25 European languages, incl. Finnish) — no language selection needed.
 
 ---
 
 ## Features
 
-- **Model**: `RASMUS/whisper-large-v3-turbo-finnish-ct2` (CTranslate2 FP16 on CUDA).
-- **Language Lock**: Restricted to Finnish (`language="fi"`).
+- **Model**: `nemo-parakeet-tdt-0.6b-v3` ([istupakov/parakeet-tdt-0.6b-v3-onnx](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx), INT8 quantized ONNX).
+- **Language**: auto-detected (25 European languages, incl. Finnish).
 - **REST API**: Simple multipart audio transcription endpoint.
 - **Web UI**: Modern responsive test web interface built-in (browser mic recorder, file drag & drop, waveform/audio player, segment breakdown, export TXT/JSON).
 - **Default Port**: `8001` (configurable via `STT_PORT`).
@@ -22,6 +22,7 @@ The server is **locked to Finnish language** (`language="fi"`), eliminating lang
 ```bash
 pip install -r requirements.txt
 ```
+Needs CUDA/cuDNN for GPU; otherwise set `STT_DEVICE=cpu`.
 
 ### 2. Start the API Server
 ```bash
@@ -32,7 +33,7 @@ Or using Uvicorn directly:
 uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
-The server will automatically preload `RASMUS/whisper-large-v3-turbo-finnish-ct2` on GPU CUDA on startup.
+The server will automatically download `nemo-parakeet-tdt-0.6b-v3` (INT8 quantized ONNX) from Hugging Face and preload it on startup.
 
 ---
 
@@ -40,13 +41,14 @@ The server will automatically preload `RASMUS/whisper-large-v3-turbo-finnish-ct2
 
 | Variable | Default | Description |
 |---|---|---|
-| `STT_MODEL_ID` | `RASMUS/whisper-large-v3-turbo-finnish-ct2` | Hugging Face model repository ID |
-| `STT_DEVICE` | `cuda` | PyTorch / CTranslate2 device (`cuda` or `cpu`) |
-| `STT_COMPUTE_TYPE` | `float16` | Precision mode (`float16`, `int8_float16`, etc.) |
+| `STT_MODEL_ID` | `nemo-parakeet-tdt-0.6b-v3` | onnx-asr model name (or Hugging Face repo ID) |
+| `STT_QUANTIZATION` | `int8` | Quantized weights (`int8`, empty/`none` = full precision) |
+| `STT_DEVICE` | `cuda` | ONNX Runtime device (`cuda` default, `cpu` fallback/override) |
+| `STT_LANGUAGE` | `auto` | Response language tag (model auto-detects speech language) |
 | `STT_HOST` | `0.0.0.0` | Server bind host |
 | `STT_PORT` | `8001` | Server bind port |
-| `STT_BEAM_SIZE` | `5` | Decoding beam search size |
-| `STT_VAD_FILTER` | `true` | Enable Voice Activity Detection filtering |
+| `STT_BEAM_SIZE` | `5` | Accepted for compatibility; ignored (greedy TDT decoding) |
+| `STT_VAD_FILTER` | `true` | Enable VAD chunking for long audio |
 
 ---
 
@@ -59,10 +61,10 @@ The server will automatically preload `RASMUS/whisper-large-v3-turbo-finnish-ct2
 
 #### Request Parameters
 - `file` (*file*, required): Audio file (WAV, MP3, M4A, OGG, FLAC, WEBM, etc.).
-- `beam_size` (*integer*, optional, default: 5): Beam size for search decoding.
-- `vad_filter` (*boolean*, optional, default: true): Enable VAD silence filtering.
+- `beam_size` (*integer*, optional): Accepted for compatibility; ignored.
+- `vad_filter` (*boolean*, optional, default: true): Enable VAD chunking for long audio.
 - `word_timestamps` (*boolean*, optional, default: false): Include word-level timestamps.
-- `initial_prompt` (*string*, optional): Context or style prompt.
+- `initial_prompt` (*string*, optional): Accepted for compatibility; ignored.
 
 #### cURL Example
 ```bash
@@ -77,18 +79,16 @@ curl -X POST "http://localhost:8001/api/v1/transcribe" \
   "status": "success",
   "filename": "puhe.wav",
   "text": "Tämä on esimerkki puheentunnistuksesta suomeksi.",
-  "language": "fi",
+  "language": "auto",
   "duration": 3.45,
   "duration_after_vad": 3.12,
   "processing_time": 0.14,
   "segments": [
     {
-      "id": 1,
+      "id": 0,
       "start": 0.0,
       "end": 3.45,
-      "text": "Tämä on esimerkki puheentunnistuksesta suomeksi.",
-      "avg_logprob": -0.15,
-      "no_speech_prob": 0.01
+      "text": "Tämä on esimerkki puheentunnistuksesta suomeksi."
     }
   ]
 }
@@ -103,10 +103,10 @@ curl -X POST "http://localhost:8001/api/v1/transcribe" \
 ```json
 {
   "status": "healthy",
-  "model": "RASMUS/whisper-large-v3-turbo-finnish-ct2",
-  "language": "fi",
-  "device": "cuda",
-  "compute_type": "float16"
+  "model": "nemo-parakeet-tdt-0.6b-v3",
+  "quantization": "int8",
+  "language": "auto",
+  "device": "cuda"
 }
 ```
 

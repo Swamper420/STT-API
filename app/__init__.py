@@ -1,1 +1,1 @@
-"""STT API Package serving RASMUS/whisper-large-v3-turbo-finnish-ct2."""
+"""STT API Package serving Parakeet TDT 0.6B v3 (INT8 quantized ONNX)."""

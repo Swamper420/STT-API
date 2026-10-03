@@ -1,9 +1,7 @@
-faster-whisper
+onnx-asr[gpu,hub]
+soundfile
+numpy
 fastapi
 uvicorn[standard]
 python-multipart
-ctranslate2
-torch
-nvidia-cublas-cu12
-nvidia-cudnn-cu12
 pydantic

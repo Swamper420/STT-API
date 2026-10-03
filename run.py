@@ -37,8 +37,8 @@ if __name__ == "__main__":
         proto = "http"
 
     print(f"Starting STT REST API server on {proto}://{settings.host}:{settings.port}")
-    print(f"Model: {settings.model_id}")
-    print(f"Language: {settings.language} (Finnish only)")
+    print(f"Model: {settings.model_id} (quantization={settings.quantization})")
+    print(f"Language: {settings.language} (auto-detected, 25 European languages)")
     print(f"Device: {settings.device}")
     if use_ssl:
         print(f"SSL Enabled: {settings.ssl_certfile}, {settings.ssl_keyfile}")
