@@ -1,4 +1,5 @@
-onnx-asr[gpu,hub]
+transcribe-cpp
+huggingface-hub
 soundfile
 numpy
 fastapi

@@ -29,9 +29,9 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down STT REST API Server.")
 
 app = FastAPI(
-    title="Parakeet STT REST API",
-    description=f"REST API server serving {settings.model_id} (INT8 quantized ONNX) with automatic language detection.",
-    version="2.0.0",
+    title="Parakeet Ultra STT REST API",
+    description=f"REST API server serving {settings.model_id}/{settings.gguf_file} (GGUF {settings.quantization}) with automatic language detection.",
+    version="2.1.0",
     lifespan=lifespan
 )
 
@@ -63,6 +63,7 @@ async def health_check():
     return {
         "status": "healthy" if stt_engine.is_ready else "initializing",
         "model": settings.model_id,
+        "gguf_file": settings.gguf_file,
         "quantization": settings.quantization,
         "language": settings.language,
         "device": settings.device
@@ -72,12 +73,12 @@ async def health_check():
 async def transcribe_audio(
     file: UploadFile = File(..., description="Audio file (wav, mp3, ogg, m4a, flac, webm, etc.)"),
     beam_size: int = Form(default=settings.beam_size, description="Accepted for compatibility; ignored (greedy TDT decoding)"),
-    vad_filter: bool = Form(default=settings.vad_filter, description="Enable VAD chunking for long audio"),
+    vad_filter: bool = Form(default=settings.vad_filter, description="Accepted for compatibility; ignored (no VAD in GGUF runtime)"),
     word_timestamps: bool = Form(default=False, description="Include word-level timestamps"),
     initial_prompt: str = Form(default=None, description="Accepted for compatibility; ignored (Parakeet takes no prompt)")
 ):
     """
-    Transcribes an audio file using Parakeet TDT 0.6B v3 (INT8 quantized ONNX).
+    Transcribes an audio file using Parakeet Ultra 0.6B GGUF.
     The spoken language is auto-detected (25 European languages, incl. Finnish).
     """
     if not file.filename:

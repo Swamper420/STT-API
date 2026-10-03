@@ -1,5 +1,5 @@
 import logging
-import math
+import os
 import subprocess
 import threading
 import time
@@ -14,7 +14,6 @@ from app.config import settings
 logger = logging.getLogger("stt_api.model")
 
 TARGET_SAMPLE_RATE = 16000
-# Must mirror onnx-asr SampleRates; anything else is resampled below.
 SUPPORTED_SAMPLE_RATES = (8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000)
 
 
@@ -58,7 +57,7 @@ def _decode_with_wave(path: str) -> Tuple[np.ndarray, int]:
 
 
 def load_waveform_mono(path: Any) -> Tuple[np.ndarray, int]:
-    """Returns (mono float32 waveform, sample_rate). Resampling handled by onnx-asr."""
+    """Returns (mono float32 waveform, sample_rate). Caller resamples to 16k."""
     if not isinstance(path, (str, Path)):
         return np.asarray(path, dtype=np.float32), TARGET_SAMPLE_RATE
     str_path = str(path)
@@ -91,92 +90,59 @@ def load_waveform_mono(path: Any) -> Tuple[np.ndarray, int]:
     return np.ascontiguousarray(waveform, dtype=np.float32), sr
 
 
-def _group_tokens_to_words(
-    tokens: List[str],
-    timestamps: Optional[List[float]],
-    logprobs: Optional[List[float]],
-    seg_start: float,
-    seg_end: float,
-) -> List[Dict[str, Any]]:
-    """Groups SentencePiece tokens (leading space = word start) into word dicts."""
-    words: List[Dict[str, Any]] = []
-    current: Optional[Dict[str, Any]] = None
-    n = len(tokens)
-    if not timestamps or len(timestamps) != n:
-        timestamps = None
-    if not logprobs or len(logprobs) != n:
-        logprobs = None
-    seg_dur = max(0.0, seg_end - seg_start)
-    for i, tok in enumerate(tokens):
-        start = round(seg_start + (timestamps[i] if timestamps else 0.0), 3)
-        rel_end = timestamps[i + 1] if timestamps and i + 1 < n else seg_dur
-        end = round(seg_start + rel_end, 3)
-        prob = round(float(math.exp(logprobs[i])), 4) if logprobs else None
-        if tok.startswith(" ") or current is None:
-            if current is not None:
-                current["end"] = start
-                words.append(current)
-            current = {"word": tok.strip(), "start": start, "end": end}
-            if prob is not None:
-                current["probability"] = prob
-        else:
-            current["word"] += tok.strip()
-            current["end"] = end
-    if current is not None:
-        words.append(current)
-    return [w for w in words if w["word"]]
+def _to_16k(waveform: np.ndarray, sr: int) -> np.ndarray:
+    if sr == TARGET_SAMPLE_RATE:
+        return np.ascontiguousarray(waveform, dtype=np.float32)
+    # ponytail: linear resample, exact resamplers if quality matters
+    src_len = len(waveform)
+    dst_len = max(1, int(round(src_len * TARGET_SAMPLE_RATE / float(sr))))
+    out = np.interp(
+        np.linspace(0.0, float(src_len), dst_len, endpoint=False),
+        np.arange(src_len, dtype=np.float64),
+        np.asarray(waveform, dtype=np.float64),
+    ).astype(np.float32)
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+
+def _backend() -> str:
+    d = (settings.device or "auto").strip().lower()
+    if d in ("cuda", "gpu"):
+        return "cuda"
+    return d
 
 
 class STTModelWrapper:
-    """Wrapper around onnx-asr Parakeet TDT 0.6B v3 (GPU-exclusive, single provider)."""
+    """Wrapper around Parakeet Ultra 0.6B GGUF via transcribe.cpp (ggml)."""
 
     def __init__(self):
         self._model = None
-        self._vad = None
         self._lock = threading.Lock()
 
-    def _providers(self) -> List[str]:
-        # Exclusive: exactly one provider, no silent fallback. Fails loudly.
-        if settings.device.lower() in ("cuda", "gpu"):
-            return ["CUDAExecutionProvider"]
-        return ["CPUExecutionProvider"]
+    def _resolve_model_path(self) -> str:
+        ref = (settings.gguf_file or "").strip()
+        if ref and os.path.exists(ref):
+            return ref
+        from huggingface_hub import hf_hub_download
+
+        filename = os.path.basename(ref) if ref.endswith(".gguf") else ref
+        logger.info(f"Downloading '{filename}' from '{settings.model_id}'...")
+        return hf_hub_download(repo_id=settings.model_id, filename=filename)
 
     def load_model(self) -> None:
-        """Loads the ONNX model (downloads from Hugging Face on first run)."""
-        import onnx_asr
+        """Loads the GGUF model (downloads from Hugging Face on first run)."""
+        import transcribe_cpp
 
         with self._lock:
             if self._model is not None:
                 return
+            path = self._resolve_model_path()
+            backend = _backend()
             logger.info(
-                f"Loading STT model '{settings.model_id}' "
-                f"quantization='{settings.quantization}' providers={self._providers()}..."
+                f"Loading STT model '{settings.model_id}/{os.path.basename(path)}' "
+                f"backend='{backend}'..."
             )
-            self._model = onnx_asr.load_model(
-                settings.model_id,
-                quantization=settings.quantization,
-                providers=self._providers(),
-            )
+            self._model = transcribe_cpp.Model(path, backend=backend)
             logger.info("STT model loaded successfully!")
-
-    def _build_adapter(self, eff_vad_filter: bool, word_timestamps: bool):
-        adapter = self._model
-        if eff_vad_filter:
-            # with_vad first: with_timestamps() on the VAD adapter keeps both.
-            adapter = adapter.with_vad(self._get_vad())
-        if word_timestamps:
-            adapter = adapter.with_timestamps()
-        return adapter
-
-    def _get_vad(self):
-        """Lazy-loads Silero VAD for long-form (>30s) chunking."""
-        import onnx_asr
-
-        with self._lock:
-            if self._vad is None:
-                logger.info("Loading Silero VAD model for long-form transcription...")
-                self._vad = onnx_asr.load_vad("silero", providers=self._providers())
-            return self._vad
 
     @property
     def is_ready(self) -> bool:
@@ -186,21 +152,21 @@ class STTModelWrapper:
         self,
         audio_path_or_file: Any,
         beam_size: Optional[int] = None,  # ignored: greedy TDT, kept for API compat
-        vad_filter: Optional[bool] = None,
+        vad_filter: Optional[bool] = None,  # ignored: no VAD in this runtime
         word_timestamps: bool = False,
         initial_prompt: Optional[str] = None,  # ignored: Parakeet takes no prompt
     ) -> Dict[str, Any]:
-        """Transcribes audio. Language auto-detected by Parakeet v3."""
+        """Transcribes audio. Language auto-detected by Parakeet Ultra."""
         if self._model is None:
             self.load_model()
 
-        eff_vad_filter = vad_filter if vad_filter is not None else settings.vad_filter
         start_time = time.time()
 
         waveform, sample_rate = load_waveform_mono(audio_path_or_file)
-        duration = round(float(len(waveform)) / float(sample_rate), 3)
+        pcm = _to_16k(waveform, sample_rate)
+        duration = round(float(len(pcm)) / float(TARGET_SAMPLE_RATE), 3)
 
-        if len(waveform) == 0:
+        if len(pcm) == 0:
             return {
                 "text": "",
                 "language": settings.language,
@@ -210,56 +176,43 @@ class STTModelWrapper:
                 "segments": [],
             }
 
-        return self._recognize(
-            self._build_adapter(eff_vad_filter, word_timestamps),
-            waveform, sample_rate, duration,
-            eff_vad_filter, word_timestamps, start_time,
-        )
+        language = None if settings.language.strip().lower() == "auto" else settings.language
+        timestamps = "word" if word_timestamps else "segment"
 
-    def _recognize(
-        self, adapter, waveform, sample_rate, duration,
-        eff_vad_filter: bool, word_timestamps: bool, start_time: float,
-    ) -> Dict[str, Any]:
-        if eff_vad_filter:
-            seg_results = list(adapter.recognize(waveform, sample_rate=sample_rate))
-            segments: List[Dict[str, Any]] = []
-            texts: List[str] = []
-            spoken = 0.0
-            for i, seg in enumerate(seg_results):
-                s = round(float(seg.start), 3)
-                e = round(float(seg.end), 3)
-                text = seg.text.strip()
-                item: Dict[str, Any] = {"id": i, "start": s, "end": e, "text": text}
-                if word_timestamps and getattr(seg, "tokens", None):
-                    item["words"] = _group_tokens_to_words(
-                        seg.tokens, seg.timestamps, getattr(seg, "logprobs", None), s, e
-                    )
-                segments.append(item)
-                if text:
-                    texts.append(text)
-                spoken += max(0.0, e - s)
-            full_text = " ".join(texts)
-            duration_after_vad = round(spoken, 3)
-        else:
-            result = adapter.recognize(waveform, sample_rate=sample_rate)
-            if isinstance(result, str):
-                full_text = result.strip()
-                segments = [{"id": 0, "start": 0.0, "end": duration, "text": full_text}]
-            else:  # TimestampedResult
-                full_text = result.text.strip()
-                item = {"id": 0, "start": 0.0, "end": duration, "text": full_text}
-                if getattr(result, "tokens", None):
-                    item["words"] = _group_tokens_to_words(
-                        result.tokens, result.timestamps, result.logprobs, 0.0, duration
-                    )
-                segments = [item]
-            duration_after_vad = duration
+        # One run at a time per Model: sessions share the compute backend.
+        with self._lock:
+            with self._model.session() as session:
+                result = session.run(pcm, language=language, timestamps=timestamps)
+
+        text = (result.text or "").strip()
+        lang = result.language or settings.language
+        segments: List[Dict[str, Any]] = []
+        for i, seg in enumerate(result.segments or ()):
+            segments.append({
+                "id": i,
+                "start": round(seg.t0_ms / 1000.0, 3),
+                "end": round(seg.t1_ms / 1000.0, 3),
+                "text": (seg.text or "").strip(),
+            })
+        if word_timestamps and getattr(result, "words", None):
+            by_seg: Dict[int, List[Dict[str, Any]]] = {}
+            for w in result.words:
+                by_seg.setdefault(w.seg_index, []).append({
+                    "word": w.text,
+                    "start": round(w.t0_ms / 1000.0, 3),
+                    "end": round(w.t1_ms / 1000.0, 3),
+                })
+            for i, item in enumerate(segments):
+                if i in by_seg:
+                    item["words"] = by_seg[i]
+        if not segments and text:
+            segments = [{"id": 0, "start": 0.0, "end": duration, "text": text}]
 
         return {
-            "text": full_text,
-            "language": settings.language,
+            "text": text,
+            "language": lang,
             "duration": duration,
-            "duration_after_vad": duration_after_vad,
+            "duration_after_vad": duration,
             "processing_time": round(time.time() - start_time, 3),
             "segments": segments,
         }
