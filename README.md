@@ -49,6 +49,7 @@ The server will automatically download `parakeet-ultra-0.6b-Q4_K_M.gguf` (4-bit,
 | `STT_PORT` | `8001` | Server bind port |
 | `STT_BEAM_SIZE` | `5` | Accepted for compatibility; ignored (greedy TDT decoding) |
 | `STT_VAD_FILTER` | `true` | Accepted for compatibility; ignored (no VAD in GGUF runtime) |
+| `STT_CHUNK_SECONDS` | `30` | Single model pass up to this many seconds; longer audio splits into windows of this size cut at quiet points |
 
 ---
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import logging
@@ -31,7 +32,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Parakeet Ultra STT REST API",
     description=f"REST API server serving {settings.model_id}/{settings.gguf_file} (GGUF {settings.quantization}) with automatic language detection.",
-    version="2.1.0",
+    version="2.2.0",
     lifespan=lifespan
 )
 
@@ -95,13 +96,14 @@ async def transcribe_audio(
             temp_file.write(content)
             temp_file_path = temp_file.name
 
-        # Execute transcription
-        result = stt_engine.transcribe(
-            audio_path_or_file=temp_file_path,
-            beam_size=beam_size,
-            vad_filter=vad_filter,
-            word_timestamps=word_timestamps,
-            initial_prompt=initial_prompt
+        # Execute transcription off the event loop (minutes-long on long audio)
+        result = await asyncio.to_thread(
+            stt_engine.transcribe,
+            temp_file_path,
+            beam_size,
+            vad_filter,
+            word_timestamps,
+            initial_prompt,
         )
 
         return {

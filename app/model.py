@@ -4,6 +4,7 @@ import subprocess
 import threading
 import time
 import wave
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,6 +16,15 @@ logger = logging.getLogger("stt_api.model")
 
 TARGET_SAMPLE_RATE = 16000
 SUPPORTED_SAMPLE_RATES = (8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000)
+
+# Long audio: single pass up to settings.chunk_seconds, else windows of that
+# size cut at quiet points so words never split.
+# ponytail: fixed gates; reach for Silero VAD if boundary misses matter.
+CHUNK_SEARCH_SEC = 5.0
+MIN_TAIL_SEC = 3.0
+MIN_SPLIT_SEC = 5.0
+SILENCE_RMS = 0.01
+CHUNK_FRAME = 320  # 20 ms @ 16 kHz
 
 
 def _decode_with_ffmpeg(path: str) -> Tuple[np.ndarray, int]:
@@ -104,6 +114,46 @@ def _to_16k(waveform: np.ndarray, sr: int) -> np.ndarray:
     return np.ascontiguousarray(out, dtype=np.float32)
 
 
+def _sanitize(pcm: np.ndarray) -> np.ndarray:
+    pcm = np.asarray(pcm, dtype=np.float32)
+    pcm = np.nan_to_num(pcm, nan=0.0, posinf=0.0, neginf=0.0)
+    return np.ascontiguousarray(np.clip(pcm, -1.0, 1.0), dtype=np.float32)
+
+
+def _is_silent(chunk: np.ndarray) -> bool:
+    if len(chunk) == 0:
+        return True
+    return float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2))) < SILENCE_RMS
+
+
+def _plan_chunks(pcm: np.ndarray, chunk_len: int, search_len: int, min_tail_len: int) -> List[Tuple[int, int]]:
+    """Split sample indices into windows ending at quiet points."""
+    n = len(pcm)
+    if n <= chunk_len:
+        return [(0, n)]
+    nf = max(1, n // CHUNK_FRAME)
+    energy = np.mean(np.abs(pcm[: nf * CHUNK_FRAME].reshape(nf, CHUNK_FRAME)), axis=1)
+    splits: List[Tuple[int, int]] = []
+    start = 0
+    while start + chunk_len < n:
+        target = start + chunk_len
+        lo = max(start + 1, target - search_len)
+        lo_f, hi_f = lo // CHUNK_FRAME, min(target, n - 1) // CHUNK_FRAME
+        if hi_f > lo_f:
+            cut = (lo_f + int(np.argmin(energy[lo_f : hi_f + 1]))) * CHUNK_FRAME + CHUNK_FRAME // 2
+            cut = min(max(cut, start + 1), n - 1)
+        else:
+            cut = target
+        splits.append((start, cut))
+        start = cut
+    if start < n:
+        if splits and n - start < min_tail_len:
+            splits[-1] = (splits[-1][0], n)
+        else:
+            splits.append((start, n))
+    return splits
+
+
 def _backend() -> str:
     d = (settings.device or "auto").strip().lower()
     if d in ("cuda", "gpu"):
@@ -163,7 +213,7 @@ class STTModelWrapper:
         start_time = time.time()
 
         waveform, sample_rate = load_waveform_mono(audio_path_or_file)
-        pcm = _to_16k(waveform, sample_rate)
+        pcm = _sanitize(_to_16k(waveform, sample_rate))
         duration = round(float(len(pcm)) / float(TARGET_SAMPLE_RATE), 3)
 
         if len(pcm) == 0:
@@ -178,33 +228,70 @@ class STTModelWrapper:
 
         language = None if settings.language.strip().lower() == "auto" else settings.language
         timestamps = "word" if word_timestamps else "segment"
+        chunk_len = max(int(float(settings.chunk_seconds) * TARGET_SAMPLE_RATE), TARGET_SAMPLE_RATE)
+        splits = _plan_chunks(
+            pcm,
+            chunk_len,
+            int(CHUNK_SEARCH_SEC * TARGET_SAMPLE_RATE),
+            int(MIN_TAIL_SEC * TARGET_SAMPLE_RATE),
+        )
+        min_split = int(MIN_SPLIT_SEC * TARGET_SAMPLE_RATE)
+
+        texts: List[str] = []
+        segments: List[Dict[str, Any]] = []
+        word_rows: List[Tuple[int, str, float, float]] = []
+        lang = settings.language
 
         # One run at a time per Model: sessions share the compute backend.
         with self._lock:
             with self._model.session() as session:
-                result = session.run(pcm, language=language, timestamps=timestamps)
+                pending = deque(splits)
+                while pending:
+                    s, e = pending.popleft()
+                    if _is_silent(pcm[s:e]):
+                        continue
+                    try:
+                        result = session.run(pcm[s:e], language=language, timestamps=timestamps)
+                    except Exception as err:
+                        if e - s > min_split:
+                            mid = (s + e) // 2
+                            pending.appendleft((mid, e))
+                            pending.appendleft((s, mid))
+                            logger.warning(f"Chunk at {s / TARGET_SAMPLE_RATE:.1f}s failed ({err}); split and retry")
+                        else:
+                            logger.warning(f"Skipping {(e - s) / TARGET_SAMPLE_RATE:.1f}s at {s / TARGET_SAMPLE_RATE:.1f}s: {err}")
+                        continue
+                    if result.language:
+                        lang = result.language
+                        if language is None:
+                            language = result.language  # pin first detect for rest
+                    texts.append((result.text or "").strip())
+                    seg_base = len(segments)
+                    offset = s / TARGET_SAMPLE_RATE
+                    for seg in result.segments or ():
+                        segments.append({
+                            "id": len(segments),
+                            "start": round(seg.t0_ms / 1000.0 + offset, 3),
+                            "end": round(seg.t1_ms / 1000.0 + offset, 3),
+                            "text": (seg.text or "").strip(),
+                        })
+                    if word_timestamps and getattr(result, "words", None):
+                        for w in result.words:
+                            word_rows.append((
+                                w.seg_index + seg_base,
+                                w.text,
+                                round(w.t0_ms / 1000.0 + offset, 3),
+                                round(w.t1_ms / 1000.0 + offset, 3),
+                            ))
 
-        text = (result.text or "").strip()
-        lang = result.language or settings.language
-        segments: List[Dict[str, Any]] = []
-        for i, seg in enumerate(result.segments or ()):
-            segments.append({
-                "id": i,
-                "start": round(seg.t0_ms / 1000.0, 3),
-                "end": round(seg.t1_ms / 1000.0, 3),
-                "text": (seg.text or "").strip(),
-            })
-        if word_timestamps and getattr(result, "words", None):
+        text = " ".join(t for t in texts if t)
+        if word_rows:
             by_seg: Dict[int, List[Dict[str, Any]]] = {}
-            for w in result.words:
-                by_seg.setdefault(w.seg_index, []).append({
-                    "word": w.text,
-                    "start": round(w.t0_ms / 1000.0, 3),
-                    "end": round(w.t1_ms / 1000.0, 3),
-                })
-            for i, item in enumerate(segments):
-                if i in by_seg:
-                    item["words"] = by_seg[i]
+            for sid, word, ws, we in word_rows:
+                by_seg.setdefault(sid, []).append({"word": word, "start": ws, "end": we})
+            for item in segments:
+                if item["id"] in by_seg:
+                    item["words"] = by_seg[item["id"]]
         if not segments and text:
             segments = [{"id": 0, "start": 0.0, "end": duration, "text": text}]
 

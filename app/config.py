@@ -45,6 +45,10 @@ class Settings(BaseModel):
     beam_size: int = int(os.getenv("STT_BEAM_SIZE", "5"))
     vad_filter: bool = os.getenv("STT_VAD_FILTER", "true").lower() in ("true", "1", "yes")
 
+    # Long audio: single model pass up to this many seconds, then windows of
+    # this size cut at quiet points. ponytail: one knob, rest fixed in model.py.
+    chunk_seconds: float = float(os.getenv("STT_CHUNK_SECONDS", "30"))
+
     # Server network settings
     host: str = os.getenv("STT_HOST", "0.0.0.0")
     port: int = int(os.getenv("STT_PORT", "8001"))
