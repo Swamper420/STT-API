@@ -22,7 +22,7 @@ The model auto-detects the spoken language (25 European languages, incl. Finnish
 ```bash
 pip install -r requirements.txt
 ```
-Needs CUDA/cuDNN for GPU; otherwise set `STT_DEVICE=cpu`.
+Needs CUDA/cuDNN for GPU. GPU mode is exclusive: failures raise, never silently use CPU.
 
 ### 2. Start the API Server
 ```bash
@@ -42,8 +42,8 @@ The server will automatically download `nemo-parakeet-tdt-0.6b-v3` (INT8 quantiz
 | Variable | Default | Description |
 |---|---|---|
 | `STT_MODEL_ID` | `nemo-parakeet-tdt-0.6b-v3` | onnx-asr model name (or Hugging Face repo ID) |
-| `STT_QUANTIZATION` | `int8` | Quantized weights (`int8`, empty/`none` = full precision) |
-| `STT_DEVICE` | `cuda` | ONNX Runtime device (`cuda` default, `cpu` fallback/override) |
+| `STT_QUANTIZATION` | `int8` on CPU, full precision on CUDA | Quantized weights (`int8` has no CUDA kernels; explicit `int8` + CUDA fails loudly) |
+| `STT_DEVICE` | `cuda` | Exclusive single provider (`cuda` or `cpu`), no fallback |
 | `STT_LANGUAGE` | `auto` | Response language tag (model auto-detects speech language) |
 | `STT_HOST` | `0.0.0.0` | Server bind host |
 | `STT_PORT` | `8001` | Server bind port |
@@ -104,7 +104,7 @@ curl -X POST "http://localhost:8001/api/v1/transcribe" \
 {
   "status": "healthy",
   "model": "nemo-parakeet-tdt-0.6b-v3",
-  "quantization": "int8",
+  "quantization": null,
   "language": "auto",
   "device": "cuda"
 }

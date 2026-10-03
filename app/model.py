@@ -128,7 +128,7 @@ def _group_tokens_to_words(
 
 
 class STTModelWrapper:
-    """Wrapper around onnx-asr Parakeet TDT 0.6B v3 (INT8 quantized ONNX)."""
+    """Wrapper around onnx-asr Parakeet TDT 0.6B v3 (GPU-exclusive, single provider)."""
 
     def __init__(self):
         self._model = None
@@ -136,12 +136,13 @@ class STTModelWrapper:
         self._lock = threading.Lock()
 
     def _providers(self) -> List[str]:
+        # Exclusive: exactly one provider, no silent fallback. Fails loudly.
         if settings.device.lower() in ("cuda", "gpu"):
-            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            return ["CUDAExecutionProvider"]
         return ["CPUExecutionProvider"]
 
     def load_model(self) -> None:
-        """Loads the quantized ONNX model (downloads from Hugging Face on first run)."""
+        """Loads the ONNX model (downloads from Hugging Face on first run)."""
         import onnx_asr
 
         with self._lock:
@@ -151,23 +152,21 @@ class STTModelWrapper:
                 f"Loading STT model '{settings.model_id}' "
                 f"quantization='{settings.quantization}' providers={self._providers()}..."
             )
-            try:
-                self._model = onnx_asr.load_model(
-                    settings.model_id,
-                    quantization=settings.quantization,
-                    providers=self._providers(),
-                )
-            except Exception as e:
-                if self._providers() != ["CPUExecutionProvider"]:
-                    logger.warning(f"GPU load failed ({e}), retrying on CPU...")
-                    self._model = onnx_asr.load_model(
-                        settings.model_id,
-                        quantization=settings.quantization,
-                        providers=["CPUExecutionProvider"],
-                    )
-                else:
-                    raise
+            self._model = onnx_asr.load_model(
+                settings.model_id,
+                quantization=settings.quantization,
+                providers=self._providers(),
+            )
             logger.info("STT model loaded successfully!")
+
+    def _build_adapter(self, eff_vad_filter: bool, word_timestamps: bool):
+        adapter = self._model
+        if eff_vad_filter:
+            # with_vad first: with_timestamps() on the VAD adapter keeps both.
+            adapter = adapter.with_vad(self._get_vad())
+        if word_timestamps:
+            adapter = adapter.with_timestamps()
+        return adapter
 
     def _get_vad(self):
         """Lazy-loads Silero VAD for long-form (>30s) chunking."""
@@ -176,7 +175,7 @@ class STTModelWrapper:
         with self._lock:
             if self._vad is None:
                 logger.info("Loading Silero VAD model for long-form transcription...")
-                self._vad = onnx_asr.load_vad("silero", providers=["CPUExecutionProvider"])
+                self._vad = onnx_asr.load_vad("silero", providers=self._providers())
             return self._vad
 
     @property
@@ -211,13 +210,16 @@ class STTModelWrapper:
                 "segments": [],
             }
 
-        adapter = self._model
-        if eff_vad_filter:
-            # with_vad first: with_timestamps() on the VAD adapter keeps both.
-            adapter = adapter.with_vad(self._get_vad())
-        if word_timestamps:
-            adapter = adapter.with_timestamps()
+        return self._recognize(
+            self._build_adapter(eff_vad_filter, word_timestamps),
+            waveform, sample_rate, duration,
+            eff_vad_filter, word_timestamps, start_time,
+        )
 
+    def _recognize(
+        self, adapter, waveform, sample_rate, duration,
+        eff_vad_filter: bool, word_timestamps: bool, start_time: float,
+    ) -> Dict[str, Any]:
         if eff_vad_filter:
             seg_results = list(adapter.recognize(waveform, sample_rate=sample_rate))
             segments: List[Dict[str, Any]] = []
